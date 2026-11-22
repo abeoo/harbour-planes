@@ -55,7 +55,8 @@ const num = (k, d) => (q.has(k) && !isNaN(+q.get(k))) ? +q.get(k) : d;
 const CFG = {
   lat: num('lat', -41.2923),     // 20 Oriental Terrace, Oriental Bay (approx.)
   lon: num('lon', 174.7868),
-  heightM: num('height', 50),    // your eye height above sea level, metres
+  heightM: num('height', 50),    // eye height above sea level (m); replaced by terrain ground + agl unless ?height= set
+  agl: num('agl', 12),           // your eye height above the ground outside (m) — roughly 3 m per storey
   facing: num('facing', 42),     // compass bearing straight out of the window
   fov: num('fov', 110),          // horizontal degrees the screen represents
   offset: num('offset', 0),      // nudge pointer left(-)/right(+) in degrees to calibrate
@@ -68,7 +69,7 @@ const CFG = {
 const $ = id => document.getElementById(id);
 const svg = $('scene'), card = $('card');
 const routes = {};          // callsign -> route or null
-let planes = [], lastOk = 0, demoT = 0, feedSource = '', lastErr = '';
+let skyline = null, planes = [], lastOk = 0, demoT = 0, feedSource = '', lastErr = '';
 
 // ---------- geometry ----------
 const R = 6371000, rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
@@ -80,38 +81,60 @@ function bearingDist(lat, lon) {
   return { brg: (deg(Math.atan2(y, x)) + 360) % 360, dist: 2 * R * Math.asin(Math.sqrt(a)) };
 }
 const rel = b => ((b - CFG.facing - CFG.offset + 540) % 360) - 180;   // -180..180, 0 = straight out
-const HORIZON = 0.78;
-function toScreen(p) {
-  const W = innerWidth, H = innerHeight;
-  const x = W * (0.5 + p.rel / CFG.fov);
-  const e = Math.max(0, Math.min(CFG.maxElev, p.elev));
-  const y = H * HORIZON - (H * (HORIZON - 0.12)) * (e / CFG.maxElev);
-  return { x, y };
+const HORIZON = 0.74, WATER = 0.06;   // sea line position, harbour strip height (fractions of screen)
+// elevation angle -> screen y. Square-root scale gives low angles (hills, climbing planes) room.
+function angToY(e) {
+  const H = innerHeight, hy = H * HORIZON;
+  if (e >= 0) return hy - (hy - H * 0.1) * Math.sqrt(Math.min(e, CFG.maxElev) / CFG.maxElev);
+  return hy + H * WATER * Math.min(1, -e / 1.5);
 }
+const bx = b => innerWidth * (0.5 + rel(b) / CFG.fov);
+function toScreen(p) {
+  return { x: innerWidth * (0.5 + p.rel / CFG.fov), y: angToY(Math.max(0, p.elev)) };
+}
+// a few landmarks across the harbour, labelled on the water line
+const LANDMARKS = [['Matiu / Somes Is', -41.2585, 174.8645], ['Petone', -41.2268, 174.8750], ['Eastbourne', -41.2915, 174.8985], ['Point Halswell', -41.2832, 174.8261], ['Lower Hutt', -41.2092, 174.9080]];
 const compass = b => ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(b / 22.5) % 16];
 
 // ---------- scene (horizon, hills, compass ticks, pointer) ----------
 function drawScene() {
   const W = innerWidth, H = innerHeight, hy = H * HORIZON;
+  const ty = hy + H * WATER + 6;
   let ticks = '';
   for (let b = 0; b < 360; b += 5) {
     const r = rel(b); if (Math.abs(r) > CFG.fov / 2) continue;
-    const x = W * (0.5 + r / CFG.fov), major = b % 45 === 0, mid = b % 15 === 0;
-    ticks += `<line x1="${x}" x2="${x}" y1="${hy + 8}" y2="${hy + (major ? 30 : mid ? 20 : 13)}" stroke="#3a4b6b" stroke-width="${major ? 2 : 1}"/>`;
-    if (major || mid) ticks += `<text x="${x}" y="${hy + (major ? 58 : 46)}" fill="${major ? '#9fb0cc' : '#56647e'}" font-size="${major ? W * .013 : W * .009}" text-anchor="middle" font-family="Figtree,sans-serif">${major ? compass(b) : b + '°'}</text>`;
+    const x = bx(b), major = b % 45 === 0, mid = b % 15 === 0;
+    ticks += `<line x1="${x}" x2="${x}" y1="${ty}" y2="${ty + (major ? 20 : mid ? 12 : 6)}" stroke="#3a4b6b" stroke-width="${major ? 2 : 1}"/>`;
+    if (major || mid) ticks += `<text x="${x}" y="${ty + (major ? 46 : 34)}" fill="${major ? '#9fb0cc' : '#56647e'}" font-size="${major ? W * .013 : W * .009}" text-anchor="middle" font-family="Figtree,sans-serif">${major ? compass(b) : b + '°'}</text>`;
   }
-  // soft hill silhouette across the harbour
-  let d = `M0 ${hy}`;
-  for (let i = 0; i <= 40; i++) {
-    const x = W * i / 40, h = 18 + 22 * Math.sin(i * .45) + 14 * Math.sin(i * 1.3 + 1) + 10 * Math.sin(i * .17);
-    d += ` L${x} ${hy - Math.max(4, h) * H / 1080}`;
+  // terrain: far ridges first (hazy), then mid, then near (darkest) — painter's order
+  let land = '';
+  if (skyline) {
+    const layers = [['far', '#1a2a46', .55], ['mid', '#122038', .78], ['near', '#0b1628', .95]];
+    for (const [k, fill, op] of layers) {
+      const pts = skyline.profile.filter(p => Math.abs(rel(p.b)) <= CFG.fov / 2 + 2);
+      if (!pts.length) continue;
+      let d = `M${bx(pts[0].b)} ${hy}`;
+      for (const p of pts) d += ` L${bx(p.b).toFixed(1)} ${angToY(Math.max(0, p[k])).toFixed(1)}`;
+      d += ` L${bx(pts[pts.length - 1].b)} ${hy} Z`;
+      land += `<path d="${d}" fill="${fill}" opacity="${op}" stroke="${k === 'far' ? 'rgba(160,185,220,.18)' : 'none'}" stroke-width="1"/>`;
+    }
   }
-  d += ` L${W} ${hy} Z`;
+  let marks = '';
+  for (const [name, la, lo] of LANDMARKS) {
+    const bb = bearingDist(la, lo).brg; if (Math.abs(rel(bb)) > CFG.fov / 2 - 3) continue;
+    const x = bx(bb);
+    marks += `<line x1="${x}" x2="${x}" y1="${hy + 2}" y2="${hy + H * WATER * .45}" stroke="rgba(160,185,220,.35)"/><text x="${x}" y="${hy + H * WATER * .8}" fill="rgba(170,190,220,.7)" font-size="${W * .0085}" text-anchor="middle" font-family="Figtree,sans-serif">${name}</text>`;
+  }
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML = `
     <defs><radialGradient id="glow"><stop offset="0" stop-color="#ffb400" stop-opacity=".55"/><stop offset="1" stop-color="#ffb400" stop-opacity="0"/></radialGradient></defs>
-    <rect x="0" y="${hy}" width="${W}" height="${H - hy}" fill="#070b14"/><path d="${d}" fill="#0c1628" opacity=".92"/>
-    <line x1="0" x2="${W}" y1="${hy}" y2="${hy}" stroke="#2a3a58"/>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c3150"/><stop offset="1" stop-color="#0a1424"/></linearGradient>
+    <rect x="0" y="${hy}" width="${W}" height="${H - hy}" fill="#070b14"/>
+    <rect x="0" y="${hy}" width="${W}" height="${H * WATER}" fill="url(#sea)"/>
+    ${land}
+    <line x1="0" x2="${W}" y1="${hy}" y2="${hy}" stroke="rgba(160,185,220,.25)"/>
+    ${marks}
     ${ticks}
     <g id="others"></g>
     <g id="ptr">
@@ -319,6 +342,20 @@ requestAnimationFrame(frame);
 
 if (CFG.demo) $('demo').style.display = 'block';
 drawScene();
+async function loadSkyline() {
+  const from = Math.floor(CFG.facing + CFG.offset - CFG.fov / 2 - 5), to = Math.ceil(CFG.facing + CFG.offset + CFG.fov / 2 + 5);
+  const key = `skyline:${CFG.lat},${CFG.lon},${CFG.agl},${from},${to}`;
+  try { const c = localStorage.getItem(key); if (c) skyline = JSON.parse(c); } catch (e) {}
+  if (!skyline) {
+    try {
+      skyline = await getJSON(`/api/skyline?lat=${CFG.lat}&lon=${CFG.lon}&agl=${CFG.agl}&from=${from}&to=${to}`);
+      try { localStorage.setItem(key, JSON.stringify(skyline)); } catch (e) {}
+    } catch (e) { return; }
+  }
+  if (!q.has('height') && isFinite(skyline.eye)) CFG.heightM = skyline.eye;
+  drawScene(); render();
+}
+loadSkyline();
 addEventListener('resize', () => { drawScene(); render(); });
 tick();
 setInterval(tick, CFG.poll);
