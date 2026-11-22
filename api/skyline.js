@@ -18,17 +18,20 @@ async function elevations(points) {
     while (next < chunks.length) {
       const i = chunks[next++], part = points.slice(i, i + 100);
       const url = `https://api.open-meteo.com/v1/elevation?latitude=${part.map(p => p[0].toFixed(5)).join(',')}&longitude=${part.map(p => p[1].toFixed(5)).join(',')}`;
-      let j;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (r.ok) { j = await r.json(); break; }
-        await new Promise(s => setTimeout(s, 400 * (attempt + 1)));
+      let j, last = '';
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          if (r.ok) { j = await r.json(); break; }
+          last = `${r.status} ${(await r.text()).slice(0, 160)}`;
+        } catch (e) { last = e.message; }
+        await new Promise(s => setTimeout(s, 700 * (attempt + 1)));
       }
-      if (!j) throw new Error('elevation fetch failed');
+      if (!j) throw new Error('elevation fetch failed: ' + last);
       j.elevation.forEach((e, k) => { out[i + k] = e; });
     }
   }
-  await Promise.all(Array.from({ length: 6 }, worker));
+  await Promise.all(Array.from({ length: 2 }, worker));
   return out;
 }
 export default async function handler(req, res) {
