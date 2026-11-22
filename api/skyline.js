@@ -45,7 +45,7 @@ async function elevations(points) {
 }
 export default async function handler(req, res) {
   const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
-  const agl = Math.max(0, parseFloat(req.query.agl) || 12);
+  const agl = Math.max(0, parseFloat(req.query.agl) || 45);
   let from = parseFloat(req.query.from), to = parseFloat(req.query.to);
   if (![lat, lon, from, to].every(isFinite)) return res.status(400).json({ error: 'lat, lon, from, to required' });
   if (to < from) to += 360;
