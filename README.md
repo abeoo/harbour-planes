@@ -1,5 +1,7 @@
 # Harbour Planes
 
+Live: https://harbour-planes.vercel.app (also https://wlg-planes.vercel.app). Pushes to `main` deploy automatically via Vercel.
+
 A TV screensaver that turns the screen into a second window: it points at planes flying past the flat in real time, showing flight number, airline and route, over a sky that matches the live Wellington weather.
 
 - Live aircraft: adsb.lol (fallback: adsb.fi)
