@@ -82,10 +82,10 @@ function bearingDist(lat, lon) {
 }
 const rel = b => ((b - CFG.facing - CFG.offset + 540) % 360) - 180;   // -180..180, 0 = straight out
 const HORIZON = 0.74, WATER = 0.06;   // sea line position, harbour strip height (fractions of screen)
-// elevation angle -> screen y. Square-root scale gives low angles (hills, climbing planes) room.
+// elevation angle -> screen y. A gentle power curve gives low angles (hills, climbing planes) a little extra room.
 function angToY(e) {
   const H = innerHeight, hy = H * HORIZON;
-  if (e >= 0) return hy - (hy - H * 0.1) * Math.sqrt(Math.min(e, CFG.maxElev) / CFG.maxElev);
+  if (e >= 0) return hy - (hy - H * 0.1) * Math.pow(Math.min(e, CFG.maxElev) / CFG.maxElev, 0.72);
   return hy + H * WATER * Math.min(1, -e / 1.5);
 }
 const bx = b => innerWidth * (0.5 + rel(b) / CFG.fov);
@@ -93,7 +93,7 @@ function toScreen(p) {
   return { x: innerWidth * (0.5 + p.rel / CFG.fov), y: angToY(Math.max(0, p.elev)) };
 }
 // a few landmarks across the harbour, labelled on the water line
-const LANDMARKS = [['Matiu / Somes Is', -41.2585, 174.8645], ['Petone', -41.2268, 174.8750], ['Eastbourne', -41.2915, 174.8985], ['Point Halswell', -41.2832, 174.8261], ['Lower Hutt', -41.2092, 174.9080]];
+const LANDMARKS = [['Matiu / Somes Is', -41.2585, 174.8645], ['Petone', -41.2268, 174.8750], ['Eastbourne', -41.2915, 174.8985], ['Point Halswell', -41.2832, 174.8261]];
 const compass = b => ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(b / 22.5) % 16];
 
 // ---------- scene (horizon, hills, compass ticks, pointer) ----------
@@ -112,7 +112,8 @@ function drawScene() {
   if (skyline) {
     const layers = [['far', '#1a2a46', .55], ['mid', '#122038', .78], ['near', '#0b1628', .95]];
     for (const [k, fill, op] of layers) {
-      const pts = skyline.profile.filter(p => Math.abs(rel(p.b)) <= CFG.fov / 2 + 2);
+      const all = skyline.profile, sm = all.map((p, i) => ({ b: p.b, [k]: ((all[i - 1] || p)[k] + 2 * p[k] + (all[i + 1] || p)[k]) / 4 }));
+      const pts = sm.filter(p => Math.abs(rel(p.b)) <= CFG.fov / 2 + 2);
       if (!pts.length) continue;
       let d = `M${bx(pts[0].b)} ${hy}`;
       for (const p of pts) d += ` L${bx(p.b).toFixed(1)} ${angToY(Math.max(0, p[k])).toFixed(1)}`;
