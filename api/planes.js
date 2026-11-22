@@ -16,8 +16,9 @@ export default async function handler(req, res) {
       if (!r.ok) { errors.push(`${name}: ${r.status}`); continue; }
       const j = await r.json();
       const ac = j.ac || j.aircraft || [];
-      res.setHeader('Cache-Control', 's-maxage=5, stale-while-revalidate=10');
-      return res.status(200).json({ source: name, ac });
+      let now = +j.now || 0; if (now && now < 1e12) now *= 1000; // feed timestamp (ms)
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ source: name, now, served: Date.now(), ac });
     } catch (e) { errors.push(`${name}: ${e.message}`); }
   }
   res.status(502).json({ error: 'all feeds failed', errors });

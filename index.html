@@ -70,7 +70,7 @@ const CFG = {
 const $ = id => document.getElementById(id);
 const svg = $('scene'), card = $('card');
 const routes = {};          // callsign -> route or null
-let hero = null, others = [], lastMeta = 0, sm = null, smId = null, smT = 0, skyline = null, planes = [], lastOk = 0, demoT = 0, feedSource = '', lastErr = '';
+let feedLagMs = 0, hero = null, others = [], lastMeta = 0, sm = null, smId = null, smT = 0, skyline = null, planes = [], lastOk = 0, demoT = 0, feedSource = '', lastErr = '';
 
 // ---------- geometry ----------
 const R = 6371000, rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
@@ -171,6 +171,7 @@ async function fetchPlanes() {
   const { lat, lon, radiusNm } = CFG;
   const j = await getJSON(`/api/planes?lat=${lat}&lon=${lon}&dist=${radiusNm}`);
   feedSource = j.source || '';
+  feedLagMs = (j.now && j.served) ? Math.max(0, j.served - j.now) : 0; // how old the snapshot was when served
   return j.ac || [];
 }
 async function lookupRoute(cs) {
@@ -193,7 +194,7 @@ function normalise(list) {
     const cs = (a.flight || '').trim();
     return {
       lat: a.lat, lon: a.lon, track: a.track != null ? a.track : (a.true_heading != null ? a.true_heading : null),
-      vr: a.baro_rate != null ? a.baro_rate : (a.geom_rate || 0), t0: Date.now() - (a.seen_pos || 0) * 1000,
+      vr: a.baro_rate != null ? a.baro_rate : (a.geom_rate || 0), t0: Date.now() - feedLagMs - (a.seen_pos || 0) * 1000,
       id: a.hex, cs, type: a.t || '', reg: a.r || '', altFt: Math.round(altM / 0.3048),
       gs: a.gs ? Math.round(a.gs) : null, brg: bd.brg, dist: bd.dist, rel: rel(bd.brg),
       elev: deg(Math.atan2(altM - CFG.heightM, bd.dist))
@@ -217,7 +218,8 @@ function render() {
   const tnow = Date.now();
   for (const p of planes) Object.assign(p, predict(p, tnow));
   const inView = planes.filter(p => Math.abs(p.rel) <= CFG.fov / 2 && p.elev > -1 && p.dist <= CFG.visKm * 1000);
-  hero = inView[0] || null; others = inView.slice(1);
+  const keep = hero && inView.find(p => p.id === hero.id);   // stick with the plane we're already showing
+  hero = keep || inView[0] || null; others = inView.filter(p => p !== hero);
   const ptr = document.getElementById('ptr');
   if (hero) {
     const r = routes[hero.cs];
