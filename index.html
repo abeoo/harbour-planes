@@ -68,7 +68,7 @@ const CFG = {
 const $ = id => document.getElementById(id);
 const svg = $('scene'), card = $('card');
 const routes = {};          // callsign -> route or null
-let planes = [], lastOk = 0, demoT = 0;
+let planes = [], lastOk = 0, demoT = 0, feedSource = '', lastErr = '';
 
 // ---------- geometry ----------
 const R = 6371000, rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
@@ -130,20 +130,15 @@ async function getJSON(url) {
 }
 async function fetchPlanes() {
   const { lat, lon, radiusNm } = CFG;
-  const urls = [
-    `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${radiusNm}`,
-    `https://opendata.adsb.fi/api/v2/lat/${lat}/lon/${lon}/dist/${radiusNm}`
-  ];
-  for (const u of urls) {
-    try { const j = await getJSON(u); return j.ac || j.aircraft || []; } catch (e) {}
-  }
-  throw new Error('no feed');
+  const j = await getJSON(`/api/planes?lat=${lat}&lon=${lon}&dist=${radiusNm}`);
+  feedSource = j.source || '';
+  return j.ac || [];
 }
 async function lookupRoute(cs) {
   if (!cs || cs in routes) return;
   routes[cs] = null;
   try {
-    const j = await getJSON(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`);
+    const j = await getJSON(`/api/route?cs=${encodeURIComponent(cs)}`);
     const f = j.response && j.response.flightroute;
     if (f) routes[cs] = {
       num: f.callsign_iata || f.callsign,
@@ -209,7 +204,7 @@ function render() {
   }).join('<br>') || 'No aircraft nearby';
 
   const age = lastOk ? Math.round((Date.now() - lastOk) / 1000) : null;
-  $('status').textContent = age == null ? 'Connecting to flight feed…' : (age > 60 ? `Feed lost ${age}s ago — retrying` : `${planes.length} aircraft within ${CFG.radiusNm} nm · ${inView.length} in view`);
+  $('status').textContent = age == null ? ('Connecting to flight feed…' + (lastErr ? ' (' + lastErr + ')' : '')) : (age > 60 ? `Feed lost ${age}s ago — retrying` : `${planes.length} aircraft within ${CFG.radiusNm} nm · ${inView.length} in view` + (feedSource ? ` · ${feedSource}` : ''));
 }
 
 async function tick() {
@@ -217,7 +212,7 @@ async function tick() {
     const raw = CFG.demo ? demoPlanes() : await fetchPlanes();
     planes = normalise(raw); lastOk = Date.now();
     await Promise.all(planes.slice(0, 6).map(p => lookupRoute(p.cs)));
-  } catch (e) {}
+  } catch (e) { lastErr = String(e.message || e); }
   render();
 }
 
