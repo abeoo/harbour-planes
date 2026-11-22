@@ -221,7 +221,7 @@ function render() {
   if (hero) {
     const r = routes[hero.cs];
     card.querySelector('.fn').textContent = r ? r.num : (hero.cs || hero.reg || hero.id.toUpperCase());
-    card.querySelector('.al').textContent = r && r.airline ? r.airline : (hero.cs ? 'Route unknown' : 'No callsign');
+    card.querySelector('.al').textContent = r ? (r.airline || hero.cs) : (hero.cs ? 'Route unknown' : 'No callsign');
     card.querySelector('.rt').innerHTML = r ? `${r.from}<span class="arr">→</span>${r.to}` : '';
     card.querySelector('.ct').innerHTML = r ? `<span>${r.fromCity || ''}</span><span>${r.toCity || ''}</span>` : '';
     ptr.classList.add('on'); card.classList.add('on');
