@@ -61,6 +61,7 @@ const CFG = {
   fov: num('fov', 110),          // horizontal degrees the screen represents
   offset: num('offset', 0),      // nudge pointer left(-)/right(+) in degrees to calibrate
   radiusNm: num('radius', 25),   // search radius, nautical miles
+  visKm: num('visible', 15),     // only point at planes closer than this (km) — roughly what you can actually see
   maxElev: num('maxelev', 40),   // elevation angle at top of screen
   poll: num('poll', 5) * 1000,
   demo: q.get('demo') === '1'
@@ -215,7 +216,7 @@ function render() {
 
   const tnow = Date.now();
   for (const p of planes) Object.assign(p, predict(p, tnow));
-  const inView = planes.filter(p => Math.abs(p.rel) <= CFG.fov / 2 && p.elev > -1);
+  const inView = planes.filter(p => Math.abs(p.rel) <= CFG.fov / 2 && p.elev > -1 && p.dist <= CFG.visKm * 1000);
   hero = inView[0] || null; others = inView.slice(1);
   const ptr = document.getElementById('ptr');
   if (hero) {
@@ -233,13 +234,14 @@ function render() {
   }).join('<br>') || 'No aircraft nearby';
 
   const age = lastOk ? Math.round((Date.now() - lastOk) / 1000) : null;
-  $('status').textContent = age == null ? ('Connecting to flight feed…' + (lastErr ? ' (' + lastErr + ')' : '')) : (age > 60 ? `Feed lost ${age}s ago — retrying` : `${planes.length} aircraft within ${CFG.radiusNm} nm · ${inView.length} in view` + (feedSource ? ` · ${feedSource}` : ''));
+  $('status').textContent = age == null ? ('Connecting to flight feed…' + (lastErr ? ' (' + lastErr + ')' : '')) : (age > 60 ? `Feed lost ${age}s ago — retrying` : `${planes.length} aircraft within ${CFG.radiusNm} nm · ${inView.length} in view (under ${CFG.visKm} km)` + (feedSource ? ` · ${feedSource}` : ''));
 }
 
 function animatePlanes() {
   const now = Date.now(), ptr = document.getElementById('ptr'), stem = document.getElementById('stem');
   if (hero && ptr) {
     const pr = predict(hero, now), tgt = toScreen(pr);
+    if (pr.dist > CFG.visKm * 1000 || Math.abs(pr.rel) > CFG.fov / 2) { hero = null; ptr.classList.remove('on'); card.classList.remove('on'); return; }
     // ease toward the predicted spot so new data blends in instead of snapping
     const dt = Math.min(0.2, (now - smT) / 1000); smT = now;
     if (!sm || smId !== hero.id) { sm = { x: tgt.x, y: tgt.y }; smId = hero.id; }

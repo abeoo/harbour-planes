@@ -18,6 +18,8 @@ A TV screensaver that turns the screen into a second window: it points at planes
 | `height` | 50 | Eye height above sea level (m) |
 | `lat`, `lon` | Oriental Terrace | Viewing position |
 | `radius` | 25 | Search radius (nm) |
+| `visible` | 15 | Only point at planes closer than this many km |
+| `agl` | 45 | Eye height above the ground (m), about 3 m per storey |
 | `demo=1` | | Simulated departure for testing |
 | `weather` | live | Force `clear`, `cloudy`, `rain`, `drizzle`, `storm`, `fog`, `snow` |
 | `time` | live | Force `day`, `dusk`, `night` |
