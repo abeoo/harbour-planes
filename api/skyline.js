@@ -9,30 +9,39 @@ function dest(lat, lon, brg, d) {
   const l2 = l1 + Math.atan2(Math.sin(t) * Math.sin(a) * Math.cos(p1), Math.cos(a) - Math.sin(p1) * Math.sin(p2));
   return [deg(p2), deg(l2)];
 }
+// SRTM elevation from the public AWS Terrain Tiles bucket ("skadi" .hgt.gz, 1°x1° tiles).
+import { gunzipSync } from 'node:zlib';
+const tiles = new Map();
+function tileName(lat, lon) {
+  const la = Math.floor(lat), lo = Math.floor(lon);
+  const ns = la < 0 ? 'S' : 'N', ew = lo < 0 ? 'W' : 'E';
+  const LA = String(Math.abs(la)).padStart(2, '0'), LO = String(Math.abs(lo)).padStart(3, '0');
+  return { key: `${ns}${LA}${ew}${LO}`, dir: `${ns}${LA}`, la, lo };
+}
+async function loadTile(t) {
+  if (tiles.has(t.key)) return tiles.get(t.key);
+  const r = await fetch(`https://s3.amazonaws.com/elevation-tiles-prod/skadi/${t.dir}/${t.key}.hgt.gz`, { signal: AbortSignal.timeout(20000) });
+  let tile = null;
+  if (r.ok) {
+    const buf = gunzipSync(Buffer.from(await r.arrayBuffer()));
+    const n = Math.round(Math.sqrt(buf.length / 2));
+    tile = { buf, n, la: t.la, lo: t.lo };
+  } // a missing tile means open ocean
+  tiles.set(t.key, tile);
+  return tile;
+}
 async function elevations(points) {
-  const out = new Array(points.length);
-  const chunks = [];
-  for (let i = 0; i < points.length; i += 100) chunks.push(i);
-  let next = 0;
-  async function worker() {
-    while (next < chunks.length) {
-      const i = chunks[next++], part = points.slice(i, i + 100);
-      const url = `https://api.open-meteo.com/v1/elevation?latitude=${part.map(p => p[0].toFixed(5)).join(',')}&longitude=${part.map(p => p[1].toFixed(5)).join(',')}`;
-      let j, last = '';
-      for (let attempt = 0; attempt < 4; attempt++) {
-        try {
-          const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-          if (r.ok) { j = await r.json(); break; }
-          last = `${r.status} ${(await r.text()).slice(0, 160)}`;
-        } catch (e) { last = e.message; }
-        await new Promise(s => setTimeout(s, 700 * (attempt + 1)));
-      }
-      if (!j) throw new Error('elevation fetch failed: ' + last);
-      j.elevation.forEach((e, k) => { out[i + k] = e; });
-    }
-  }
-  await Promise.all(Array.from({ length: 2 }, worker));
-  return out;
+  const need = new Map();
+  for (const [la, lo] of points) { const t = tileName(la, lo); need.set(t.key, t); }
+  await Promise.all([...need.values()].map(loadTile));
+  return points.map(([la, lo]) => {
+    const tile = tiles.get(tileName(la, lo).key);
+    if (!tile) return 0;
+    const { buf, n } = tile;
+    const row = Math.round((tile.la + 1 - la) * (n - 1)), col = Math.round((lo - tile.lo) * (n - 1));
+    const v = buf.readInt16BE(2 * (Math.min(n - 1, Math.max(0, row)) * n + Math.min(n - 1, Math.max(0, col))));
+    return v < -1000 ? 0 : v;
+  });
 }
 export default async function handler(req, res) {
   const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
