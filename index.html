@@ -23,7 +23,7 @@ svg#scene{position:absolute;inset:0;width:100%;height:100%}
 #status{position:absolute;left:5.3vw;bottom:4vh;font-size:1.2vw;color:var(--dim)}
 #list{position:absolute;right:4vw;top:6vh;font-size:1.25vw;color:var(--dim);text-align:right;line-height:1.7}
 #list b{color:var(--ink);font-weight:600}
-#card{position:absolute;min-width:24vw;padding:1.4vw 1.8vw;border-radius:1vw;background:rgba(8,14,26,.82);border:1px solid var(--line);box-shadow:0 1vw 3vw rgba(0,0,0,.5);transition:left 1.5s linear,top 1.5s linear,opacity .6s;opacity:0}
+#card{position:absolute;left:0;top:0;will-change:transform;min-width:24vw;padding:1.4vw 1.8vw;border-radius:1vw;background:rgba(8,14,26,.82);border:1px solid var(--line);box-shadow:0 1vw 3vw rgba(0,0,0,.5);transition:opacity .6s;opacity:0}
 #card.on{opacity:1}
 #card .fn{font-weight:800;font-size:3.4vw;line-height:1;color:var(--acc)}
 #card .al{font-size:1.3vw;color:var(--dim);margin-top:.3vw}
@@ -31,7 +31,7 @@ svg#scene{position:absolute;inset:0;width:100%;height:100%}
 #card .rt span.arr{color:var(--dim);font-weight:400}
 #card .ct{display:flex;justify-content:space-between;gap:2vw;font-size:1.1vw;color:var(--dim)}
 #card .meta{margin-top:1vw;font-size:1.15vw;color:var(--ink);opacity:.85}
-#ptr{transition:transform 1.5s linear;opacity:0}
+#ptr{opacity:0;transition:opacity .6s}
 #ptr.on{opacity:1}
 .edge{position:absolute;bottom:26vh;font-size:1.2vw;color:var(--dim)}
 #demo{position:absolute;right:4vw;bottom:4vh;font-size:1.1vw;color:var(--acc);display:none}
@@ -62,14 +62,14 @@ const CFG = {
   offset: num('offset', 0),      // nudge pointer left(-)/right(+) in degrees to calibrate
   radiusNm: num('radius', 25),   // search radius, nautical miles
   maxElev: num('maxelev', 40),   // elevation angle at top of screen
-  poll: num('poll', 8) * 1000,
+  poll: num('poll', 5) * 1000,
   demo: q.get('demo') === '1'
 };
 
 const $ = id => document.getElementById(id);
 const svg = $('scene'), card = $('card');
 const routes = {};          // callsign -> route or null
-let skyline = null, planes = [], lastOk = 0, demoT = 0, feedSource = '', lastErr = '';
+let hero = null, others = [], lastMeta = 0, sm = null, smId = null, smT = 0, skyline = null, planes = [], lastOk = 0, demoT = 0, feedSource = '', lastErr = '';
 
 // ---------- geometry ----------
 const R = 6371000, rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
@@ -79,6 +79,20 @@ function bearingDist(lat, lon) {
   const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
   const a = Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
   return { brg: (deg(Math.atan2(y, x)) + 360) % 360, dist: 2 * R * Math.asin(Math.sqrt(a)) };
+}
+// dead reckoning: where is the plane *now*, from its last fix + ground speed, track and climb rate
+function predict(p, now) {
+  const dt = Math.min(20, Math.max(0, (now - p.t0) / 1000));
+  let lat = p.lat, lon = p.lon, altFt = p.altFt;
+  if (p.gs && p.track != null) {
+    const d = p.gs * 0.514444 * dt, t = rad(p.track), p1 = rad(lat), a = d / R;
+    const p2 = Math.asin(Math.sin(p1) * Math.cos(a) + Math.cos(p1) * Math.sin(a) * Math.cos(t));
+    lon = lon + deg(Math.atan2(Math.sin(t) * Math.sin(a) * Math.cos(p1), Math.cos(a) - Math.sin(p1) * Math.sin(p2)));
+    lat = deg(p2);
+  }
+  altFt = Math.max(0, altFt + (p.vr || 0) / 60 * dt);
+  const bd = bearingDist(lat, lon);
+  return { brg: bd.brg, dist: bd.dist, rel: rel(bd.brg), elev: deg(Math.atan2(altFt * 0.3048 - CFG.heightM, bd.dist)), altFt };
 }
 const rel = b => ((b - CFG.facing - CFG.offset + 540) % 360) - 180;   // -180..180, 0 = straight out
 const HORIZON = 0.74, WATER = 0.06;   // sea line position, harbour strip height (fractions of screen)
@@ -177,6 +191,8 @@ function normalise(list) {
     const bd = bearingDist(a.lat, a.lon), altM = (+a.alt_baro || +a.alt_geom || 0) * 0.3048;
     const cs = (a.flight || '').trim();
     return {
+      lat: a.lat, lon: a.lon, track: a.track != null ? a.track : (a.true_heading != null ? a.true_heading : null),
+      vr: a.baro_rate != null ? a.baro_rate : (a.geom_rate || 0), t0: Date.now() - (a.seen_pos || 0) * 1000,
       id: a.hex, cs, type: a.t || '', reg: a.r || '', altFt: Math.round(altM / 0.3048),
       gs: a.gs ? Math.round(a.gs) : null, brg: bd.brg, dist: bd.dist, rel: rel(bd.brg),
       elev: deg(Math.atan2(altM - CFG.heightM, bd.dist))
@@ -188,7 +204,7 @@ function demoPlanes() {
   demoT = (demoT + CFG.poll / 1000) % 240;
   const t = demoT / 240, lat = -41.327 + t * 0.32, lon = 174.805 + t * 0.03;
   routes['ANZ421'] = { num: 'NZ421', airline: 'Air New Zealand', from: 'WLG', fromCity: 'Wellington', to: 'AKL', toCity: 'Auckland' };
-  return [{ hex: 'demo1', flight: 'ANZ421', lat, lon, alt_baro: Math.round(500 + t * 14000), gs: 160 + t * 160, t: 'A320', r: 'ZK-OXA' }];
+  return [{ hex: 'demo1', flight: 'ANZ421', lat, lon, alt_baro: Math.round(500 + t * 14000), gs: 288, track: 4, baro_rate: 3500, t: 'A320', r: 'ZK-OXA' }];
 }
 
 // ---------- render ----------
@@ -197,30 +213,19 @@ function render() {
   $('clock').textContent = now.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', hour12: false });
   $('date').textContent = now.toLocaleDateString('en-NZ', { weekday: 'long', day: 'numeric', month: 'long' });
 
+  const tnow = Date.now();
+  for (const p of planes) Object.assign(p, predict(p, tnow));
   const inView = planes.filter(p => Math.abs(p.rel) <= CFG.fov / 2 && p.elev > -1);
-  const hero = inView[0];
-  const ptr = document.getElementById('ptr'), stem = document.getElementById('stem');
+  hero = inView[0] || null; others = inView.slice(1);
+  const ptr = document.getElementById('ptr');
   if (hero) {
-    const s = toScreen(hero), r = routes[hero.cs];
-    ptr.setAttribute('transform', `translate(${s.x} ${s.y})`);
-    stem.setAttribute('y2', innerHeight * HORIZON - s.y);
-    ptr.classList.add('on');
+    const r = routes[hero.cs];
     card.querySelector('.fn').textContent = r ? r.num : (hero.cs || hero.reg || hero.id.toUpperCase());
     card.querySelector('.al').textContent = r && r.airline ? r.airline : (hero.cs ? 'Route unknown' : 'No callsign');
     card.querySelector('.rt').innerHTML = r ? `${r.from}<span class="arr">→</span>${r.to}` : '';
     card.querySelector('.ct').innerHTML = r ? `<span>${r.fromCity || ''}</span><span>${r.toCity || ''}</span>` : '';
-    card.querySelector('.meta').textContent = [hero.type, hero.altFt.toLocaleString() + ' ft', hero.gs ? hero.gs + ' kt' : '', (hero.dist / 1000).toFixed(1) + ' km ' + compass(hero.brg)].filter(Boolean).join(' · ');
-    const cw = card.offsetWidth, ch = card.offsetHeight;
-    let left = s.x + 40, top = s.y - ch - 30;
-    if (left + cw > innerWidth - 30) left = s.x - cw - 40;
-    if (top < 20) top = s.y + 40;
-    card.style.left = left + 'px'; card.style.top = top + 'px';
-    card.classList.add('on');
+    ptr.classList.add('on'); card.classList.add('on');
   } else { ptr.classList.remove('on'); card.classList.remove('on'); }
-
-  // other planes in view as small dots; out-of-view counts at the edges
-  const g = document.getElementById('others');
-  g.innerHTML = inView.slice(1).map(p => { const s = toScreen(p); return `<circle cx="${s.x}" cy="${s.y}" r="4" fill="#9fb0cc" opacity=".7"/><text x="${s.x + 9}" y="${s.y + 4}" fill="#7d8aa3" font-size="${innerWidth * .009}" font-family="Figtree,sans-serif">${routes[p.cs] ? routes[p.cs].num : p.cs}</text>`; }).join('');
 
   $('list').innerHTML = planes.slice(0, 5).map(p => {
     const r = routes[p.cs], lab = r ? `<b>${r.num}</b> ${r.from}→${r.to}` : `<b>${p.cs || p.id.toUpperCase()}</b>`;
@@ -229,6 +234,32 @@ function render() {
 
   const age = lastOk ? Math.round((Date.now() - lastOk) / 1000) : null;
   $('status').textContent = age == null ? ('Connecting to flight feed…' + (lastErr ? ' (' + lastErr + ')' : '')) : (age > 60 ? `Feed lost ${age}s ago — retrying` : `${planes.length} aircraft within ${CFG.radiusNm} nm · ${inView.length} in view` + (feedSource ? ` · ${feedSource}` : ''));
+}
+
+function animatePlanes() {
+  const now = Date.now(), ptr = document.getElementById('ptr'), stem = document.getElementById('stem');
+  if (hero && ptr) {
+    const pr = predict(hero, now), tgt = toScreen(pr);
+    // ease toward the predicted spot so new data blends in instead of snapping
+    const dt = Math.min(0.2, (now - smT) / 1000); smT = now;
+    if (!sm || smId !== hero.id) { sm = { x: tgt.x, y: tgt.y }; smId = hero.id; }
+    const k = 1 - Math.exp(-dt * 1.2);
+    sm.x += (tgt.x - sm.x) * k; sm.y += (tgt.y - sm.y) * k;
+    const s = sm;
+    ptr.setAttribute('transform', `translate(${s.x.toFixed(1)} ${s.y.toFixed(1)})`);
+    stem.setAttribute('y2', innerHeight * HORIZON - s.y);
+    if (now - lastMeta > 1000) {
+      lastMeta = now;
+      card.querySelector('.meta').textContent = [hero.type, Math.round(pr.altFt).toLocaleString() + ' ft', hero.gs ? hero.gs + ' kt' : '', (pr.dist / 1000).toFixed(1) + ' km ' + compass(pr.brg)].filter(Boolean).join(' · ');
+      const g = document.getElementById('others');
+      g.innerHTML = others.map(p => { const q2 = toScreen(predict(p, now)); return `<circle cx="${q2.x}" cy="${q2.y}" r="4" fill="#9fb0cc" opacity=".7"/><text x="${q2.x + 9}" y="${q2.y + 4}" fill="#7d8aa3" font-size="${innerWidth * .009}" font-family="Figtree,sans-serif">${routes[p.cs] ? routes[p.cs].num : p.cs}</text>`; }).join('');
+    }
+    const cw = card.offsetWidth, ch = card.offsetHeight;
+    let left = s.x + 40, top = s.y - ch - 30;
+    if (left + cw > innerWidth - 30) left = s.x - cw - 40;
+    if (top < 20) top = s.y + 40;
+    card.style.transform = `translate(${left.toFixed(1)}px, ${top.toFixed(1)}px)`;
+  }
 }
 
 async function tick() {
@@ -336,6 +367,7 @@ function frame(now) {
   const sr = cx.createRadialGradient(W * .9, H * .1, 0, W * .9, H * .1, W * .28); sr.addColorStop(0, 'rgba(5,9,18,.4)'); sr.addColorStop(1, 'rgba(5,9,18,0)'); cx.fillStyle = sr; cx.fillRect(0, 0, W, hy);
   // ground below horizon
   cx.fillStyle = '#070b14'; cx.fillRect(0, hy, W, H - hy);
+  animatePlanes();
   requestAnimationFrame(frame);
 }
 fetchWeather(); setInterval(fetchWeather, 10 * 60 * 1000);
